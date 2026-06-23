@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<!--
+ ==================================================================
+  Lotto Manager Pro — Datenverwaltung (Neubau)
+  Version: 2.0.0
+  Stand: 14. Juni 2026
+ ------------------------------------------------------------------
+  Kompletter Neuaufbau des Managers (1.0.x) im einheitlichen
+  Konsolen-Design des Analyzers (Lotto 2.0.0). Vorbereitung fuer
+  die spaetere Zusammenfuehrung zu einer Gesamt-HTML.
+
+  Funktionen (alle aus 1.0.1 uebernommen, Verhalten identisch):
+   - Laden der aktuellen Daten (Tidy-Format, mehrere Proxy-Fallbacks)
+   - Datei oeffnen (Tidy ODER altes Breitformat, robust)
+   - Aktuelle Ziehung von WestLotto holen (RSS, Auslands-tauglich)
+   - Neue Ziehung ueber 49er-Kugelraster eingeben + Validierung
+   - Suche nach ID, Loeschen der neuesten Eintraege
+   - Speichern als reines Tidy-Array (identisch zum GitHub-Original)
+   - Datenliste mit Sprungleiste (Erster / Letzter / zu ID)
+  Bedienung ueber Overlays (Modals) wie im Analyzer.
+
+  Changelog:
+  - 2.0.0  Neuaufbau mit Konsolen-Design und Overlay-Bedienung.
+           Datenlogik (Konverter, RSS, Validierung, Speichern)
+           unveraendert aus 1.0.1 uebernommen.
+ ------------------------------------------------------------------
+  Datenquelle (Tidy, immer aktuell):
+   https://johannesfriedrich.github.io/LottoNumberArchive/Lottonumbers_tidy_complete.json
+  WestLotto RSS:
+   https://ergebnisse.westlotto.com/gewinnzahlen/lottozahlen.rss
+ ==================================================================
+-->
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lotto Manager Pro</title>
+  <style>
+    /* Gleiche Design-Tokens wie der Analyzer 2.0.0 */
+    :root {
+      --bg:        #0f1722;
+      --bg-2:      #16212f;
+      --bg-3:      #1d2c3e;
+      --line:      #2a3b52;
+      --text:      #e8eef6;
+      --text-dim:  #93a4ba;
+      --amber:     #f4b740;
+      --amber-d:   #d99a1f;
+      --hot:       #ff5a5a;
+      --cold:      #4a90e2;
+      --neutral:   #35c07f;
+      --super:     #f4b740;
+      --accent:    #5cc8ff;
+      --danger:    #ff5a5a;
+      --ok:        #35c07f;
+      --radius:    14px;
+      --radius-sm: 9px;
+      --shadow:    0 10px 30px rgba(0,0,0,0.35);
+      --font:      'Segoe UI', system-ui, -apple-system, sans-serif;
+      --mono:      'SFMono-Regular', ui-monospace, 'Cascadia Code', monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: var(--font);
+      background:
+        radial-gradient(1200px 600px at 50% -10%, #1a2a3d 0%, transparent 60%),
+        var(--bg);
+      background-color: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+    @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+    header {
+      padding: 22px 18px 12px; text-align: center;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, var(--bg-2), transparent);
+    }
+    header h1 { margin: 0; font-size: clamp(1.3rem, 4vw, 1.9rem); letter-spacing: 0.5px; font-weight: 700; }
+    header h1 .dot { color: var(--amber); }
+    .ver { margin-top: 4px; font-size: 0.8rem; color: var(--text-dim); letter-spacing: 0.4px; }
+    .count-pill {
+      display: inline-block; margin-top: 10px; padding: 5px 14px;
+      background: var(--bg-3); border: 1px solid var(--line); border-radius: 20px;
+      font-size: 0.85rem; color: var(--text-dim);
+    }
+    .count-pill b { color: var(--amber); }
+
+    .toolbar {
+      display: flex; flex-wrap: wrap; gap: 10px; justify-content: center;
+      padding: 16px; max-width: 900px; margin: 0 auto;
+    }
+    .btn {
+      font-family: var(--font); font-size: 0.92rem; font-weight: 600; color: var(--text);
+      background: var(--bg-3); border: 1px solid var(--line); border-radius: var(--radius-sm);
+      padding: 10px 16px; cursor: pointer; transition: background .15s, border-color .15s, transform .05s;
+    }
+    .btn:hover { background: #243750; border-color: var(--accent); }
+    .btn:active { transform: translateY(1px); }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn.primary { background: linear-gradient(180deg, var(--amber), var(--amber-d)); color: #2a1d00; border-color: var(--amber-d); }
+    .btn.primary:hover { filter: brightness(1.05); }
+    .btn.accent { border-color: var(--accent); color: var(--accent); }
+    .btn.danger { border-color: var(--danger); color: var(--danger); }
+    .btn.danger:hover { background: rgba(255,90,90,.12); }
+    label.file-btn { position: relative; overflow: hidden; }
+    label.file-btn input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+
+    .wrap { max-width: 760px; margin: 0 auto; padding: 0 16px; }
+    .card {
+      background: var(--bg-2); border: 1px solid var(--line);
+      border-radius: var(--radius); padding: 18px; margin: 16px auto;
+    }
+    .card h2 { margin: 0 0 14px; font-size: 1.05rem; }
+    .card h2 .ic { margin-right: 8px; }
+    .hint { color: var(--text-dim); font-size: 0.86rem; line-height: 1.5; margin: 0 0 14px; }
+
+    /* 49er-Kugelraster zum Eingeben */
+    .picker-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+    .picker-head .sel-count { font-size: 0.85rem; color: var(--text-dim); }
+    .picker-head .sel-count b { color: var(--amber); }
+    .ball-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 7px; max-width: 360px; margin: 0 auto 4px; }
+    .pball {
+      aspect-ratio: 1/1; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: clamp(0.8rem, 3.5vw, 1rem);
+      background: #2c3e54; color: var(--text-dim);
+      border: 2px solid transparent; cursor: pointer;
+      transition: transform .1s, background .12s, color .12s, border-color .12s;
+      user-select: none;
+    }
+    .pball:hover:not(.disabled) { border-color: var(--accent); }
+    .pball.on {
+      background: radial-gradient(circle at 35% 30%, #ffd479, var(--amber));
+      color: #2a1d00; border-color: var(--amber-d); transform: translateY(-1px);
+    }
+    .pball.disabled { opacity: 0.32; cursor: not-allowed; }
+
+    .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; }
+    @media (max-width: 480px) { .field-row { grid-template-columns: 1fr; } }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    .field label { font-size: 0.82rem; color: var(--text-dim); }
+    .field input {
+      padding: 10px; border-radius: 8px; background: var(--bg); color: var(--text);
+      border: 1px solid var(--line); font-family: var(--mono); font-size: 0.95rem;
+    }
+    .field input:focus { outline: none; border-color: var(--accent); }
+
+    /* Datenliste + Sprungleiste */
+    .jump-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+    .jump-bar input {
+      width: 120px; padding: 8px 10px; border-radius: 8px; background: var(--bg);
+      color: var(--text); border: 1px solid var(--line); font-family: var(--mono);
+    }
+    .jump-bar input:focus { outline: none; border-color: var(--accent); }
+    #dataList {
+      max-height: 56vh; overflow-y: auto; border: 1px solid var(--line);
+      border-radius: var(--radius-sm); background: var(--bg);
+    }
+    .draw-row {
+      padding: 9px 12px; border-bottom: 1px solid var(--line);
+      display: flex; align-items: center; gap: 12px; font-size: 0.9rem;
+      scroll-margin-top: 6px;
+    }
+    .draw-row:last-child { border-bottom: none; }
+    .draw-row .rid { color: var(--text-dim); font-weight: 700; min-width: 56px; }
+    .draw-row .rdate { color: var(--text-dim); min-width: 92px; }
+    .draw-row .rnums { font-family: var(--mono); letter-spacing: 1px; color: var(--text); flex: 1; }
+    .draw-row .rsz {
+      font-size: 0.75rem; padding: 2px 8px; border-radius: 10px;
+      background: rgba(244,183,64,.16); color: var(--amber); border: 1px solid var(--amber-d); font-weight: 700;
+    }
+    .draw-row.highlight { background: rgba(92,200,255,.14); }
+    .empty-note { padding: 24px; text-align: center; color: var(--text-dim); }
+
+    /* Overlay / Modal (wie Analyzer) */
+    .overlay {
+      position: fixed; inset: 0; z-index: 2000;
+      background: rgba(6, 11, 18, 0.74); backdrop-filter: blur(3px);
+      display: none; align-items: flex-start; justify-content: center;
+      padding: 24px 14px; overflow-y: auto;
+    }
+    .overlay.open { display: flex; }
+    .modal {
+      background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius);
+      box-shadow: var(--shadow); width: 100%; max-width: 540px; margin: auto;
+      animation: pop .18s ease;
+    }
+    @keyframes pop { from { transform: translateY(8px) scale(.98); opacity: 0; } to { transform: none; opacity: 1; } }
+    .modal-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 18px; border-bottom: 1px solid var(--line);
+      position: sticky; top: 0; background: var(--bg-2); border-radius: var(--radius) var(--radius) 0 0;
+    }
+    .modal-head h2 { margin: 0; font-size: 1.1rem; }
+    .modal-close {
+      background: var(--bg-3); border: 1px solid var(--line); color: var(--text);
+      width: 34px; height: 34px; border-radius: 8px; cursor: pointer; font-size: 1.1rem;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .modal-close:hover { border-color: var(--danger); color: var(--danger); }
+    .modal-body { padding: 18px; }
+    .modal-body .full { width: 100%; margin-top: 12px; }
+    #searchResult {
+      margin-top: 12px; padding: 12px; border-radius: 8px; background: var(--bg);
+      border: 1px solid var(--line); font-family: var(--mono); font-size: 0.85rem;
+      white-space: pre-wrap; color: var(--text); min-height: 1.5em;
+    }
+    .result-balls { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 10px; }
+    .mini-ball {
+      width: 34px; height: 34px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 0.9rem;
+      background: radial-gradient(circle at 35% 30%, #ffd479, var(--amber)); color: #2a1d00;
+    }
+    .mini-ball.super { background: radial-gradient(circle at 35% 30%, #ffe0a0, var(--super)); }
+
+    /* Toast */
+    #toast {
+      position: fixed; top: 16px; left: 50%; transform: translateX(-50%) translateY(-26px);
+      z-index: 3000; min-width: 220px; max-width: 92vw;
+      padding: 13px 20px; border-radius: 11px;
+      font-size: 0.92rem; font-weight: 600; color: #07121d;
+      background: var(--ok); box-shadow: var(--shadow);
+      opacity: 0; pointer-events: none; text-align: center;
+      transition: opacity .3s ease, transform .3s ease;
+    }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    #toast.success { background: var(--ok); }
+    #toast.error   { background: var(--danger); color: #fff; }
+    #toast.info    { background: var(--accent); color: #042033; }
+
+    .loading { color: var(--text-dim); font-size: 0.85rem; text-align: center; padding: 6px; }
+    footer.foot {
+      text-align: center; color: var(--text-dim); font-size: 0.78rem;
+      padding: 24px 16px 30px; border-top: 1px solid var(--line); margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <header>
+    <h1>Lotto Manager Pro <span class="dot">·</span> Daten</h1>
+    <div class="ver">Version 2.0.0</div>
+    <div class="count-pill">Datensätze: <b id="entryCount">0</b></div>
+  </header>
+
+  <div class="toolbar">
+    <button class="btn primary" id="btnGithub">Aktuelle Daten laden</button>
+    <label class="btn file-btn">Datei öffnen<input type="file" id="fileInput" accept=".json"></label>
+    <button class="btn accent" id="btnLatest">Aktuelle Ziehung holen</button>
+    <button class="btn" id="btnSearch">Suchen</button>
+    <button class="btn danger" id="btnDelete">Löschen</button>
+    <button class="btn" id="btnSave">Speichern</button>
+  </div>
+  <div class="loading" id="loadingStatus" style="display:none;"></div>
+
+  <!-- Neue Ziehung eingeben -->
+  <div class="wrap">
+    <div class="card">
+      <h2><span class="ic">➕</span>Neue Ziehung eintragen</h2>
+      <p class="hint">Sechs Zahlen im Raster antippen, Datum und Superzahl ergänzen, dann hinzufügen. „Aktuelle Ziehung holen" füllt die Felder automatisch.</p>
+      <div class="picker-head">
+        <span style="font-size:0.82rem;color:var(--text-dim);">Zahlen wählen (1–49)</span>
+        <span class="sel-count"><b id="selCount">0</b> / 6 gewählt</span>
+      </div>
+      <div class="ball-grid" id="ballGrid"></div>
+      <div class="field-row">
+        <div class="field">
+          <label>Datum (TT.MM.JJJJ)</label>
+          <input type="text" id="newDate" placeholder="z. B. 31.12.2025">
+        </div>
+        <div class="field">
+          <label>Superzahl (0–9)</label>
+          <input type="number" id="newSuper" min="0" max="9" placeholder="0–9">
+        </div>
+      </div>
+      <button class="btn primary full" id="btnAdd" style="width:100%;margin-top:16px;">Ziehung hinzufügen</button>
+    </div>
+
+    <!-- Datenanzeige -->
+    <div class="card">
+      <h2><span class="ic">📊</span>Aktuelle Daten</h2>
+      <div class="jump-bar">
+        <button class="btn" id="btnFirst">⬆ Erster</button>
+        <button class="btn" id="btnLast">⬇ Letzter</button>
+        <input type="number" id="jumpToId" placeholder="ID …" min="1">
+        <button class="btn accent" id="btnJump">Springen</button>
+      </div>
+      <div id="dataList"><div class="empty-note">Keine Daten geladen</div></div>
+    </div>
+  </div>
+
+  <footer class="foot">
+    Speichern erzeugt ein reines Tidy-Array — austauschbar mit dem Original und jederzeit wieder ladbar.
+  </footer>
+
+  <!-- ===================== OVERLAYS ===================== -->
+
+  <!-- Suche -->
+  <div class="overlay" id="mSearch" data-overlay>
+    <div class="modal">
+      <div class="modal-head"><h2>🔍 Datensatz suchen</h2><button class="modal-close" data-close>×</button></div>
+      <div class="modal-body">
+        <p class="hint">Ziehungsnummer (ID) eingeben, um den vollständigen Datensatz anzuzeigen.</p>
+        <div class="field">
+          <label>ID</label>
+          <input type="number" id="searchId" placeholder="z. B. 1234" min="1">
+        </div>
+        <button class="btn accent full" id="btnDoSearch" style="width:100%;">Anzeigen</button>
+        <div id="searchResult">Noch keine Suche.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Löschen -->
+  <div class="overlay" id="mDelete" data-overlay>
+    <div class="modal">
+      <div class="modal-head"><h2>🗑️ Einträge löschen</h2><button class="modal-close" data-close>×</button></div>
+      <div class="modal-body">
+        <p class="hint">Löscht die zuletzt hinzugefügten Einträge (höchste IDs zuerst). Dies wirkt nur auf die geladenen Daten — gespeichert wird erst beim Export.</p>
+        <div class="field">
+          <label>Anzahl der neuesten Einträge</label>
+          <input type="number" id="deleteCount" placeholder="z. B. 1" min="1">
+        </div>
+        <button class="btn danger full" id="btnDoDelete" style="width:100%;">Endgültig löschen</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Speichern -->
+  <div class="overlay" id="mSave" data-overlay>
+    <div class="modal">
+      <div class="modal-head"><h2>💾 Speichern</h2><button class="modal-close" data-close>×</button></div>
+      <div class="modal-body">
+        <p class="hint">Als JSON im Tidy-Format speichern. Der Dateiname bekommt automatisch das heutige Datum angehängt.</p>
+        <div class="field">
+          <label>Dateiname (ohne .json)</label>
+          <input type="text" id="saveName" placeholder="lotto_daten_backup">
+        </div>
+        <button class="btn primary full" id="btnDoSave" style="width:100%;">Als JSON speichern</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  /* ===================================================================
+     DATENSCHICHT — Konverter unveraendert aus 1.0.1
+     =================================================================== */
+  const GITHUB_URL = "https://johannesfriedrich.github.io/LottoNumberArchive/Lottonumbers_tidy_complete.json";
+  let lottoData = [];
+  let selectedNumbers = [];
+
+  function tidyToWide(input) {
+    if (input && Array.isArray(input.data)) {
+      return input.data.map(e => ({
+        id: e.id, date: e.date,
+        Lottozahl: Array.isArray(e.Lottozahl) ? e.Lottozahl.map(Number) : [],
+        ...(e.Superzahl != null ? { Superzahl: Number(e.Superzahl) } : {})
+      }));
+    }
+    if (!Array.isArray(input)) throw new Error("Unbekannte JSON-Struktur (weder Tidy-Array noch {data:[]}).");
+    const map = new Map();
+    for (const row of input) {
+      if (!row || row.id == null) continue;
+      if (!map.has(row.id)) map.set(row.id, { id: row.id, date: row.date, Lottozahl: [] });
+      const e = map.get(row.id);
+      if (row.date && !e.date) e.date = row.date;
+      if (row.variable === "Lottozahl") e.Lottozahl.push(Number(row.value));
+      else if (row.variable === "Superzahl") e.Superzahl = Number(row.value);
+    }
+    const wide = [];
+    for (const e of map.values()) if (e.Lottozahl.length === 6) { e.Lottozahl.sort((a,b)=>a-b); wide.push(e); }
+    wide.sort((a,b)=>a.id-b.id);
+    return wide;
+  }
+  function wideToTidy(wide) {
+    const tidy = []; const sorted = [...wide].sort((a,b)=>a.id-b.id);
+    for (const e of sorted) {
+      const nums = Array.isArray(e.Lottozahl) ? [...e.Lottozahl].map(Number).sort((a,b)=>a-b) : [];
+      for (const z of nums) tidy.push({ id:e.id, date:e.date, variable:"Lottozahl", value:z });
+      if (e.Superzahl != null && e.Superzahl !== "") tidy.push({ id:e.id, date:e.date, variable:"Superzahl", value:Number(e.Superzahl) });
+    }
+    return tidy;
+  }
+
+  /* ===================================================================
+     UI: Toast, Overlays
+     =================================================================== */
+  let toastTimer = null;
+  function showMessage(message, isSuccess) {
+    const t = document.getElementById('toast');
+    if (!t) return;
+    t.textContent = message;
+    t.className = isSuccess ? 'success' : 'error';
+    void t.offsetWidth;
+    t.classList.add('show');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove('show'), isSuccess ? 2500 : 5000);
+  }
+  function showLoading(msg){ const el=document.getElementById('loadingStatus'); el.textContent=msg; el.style.display='block'; }
+  function hideLoading(){ document.getElementById('loadingStatus').style.display='none'; }
+
+  function openModal(id){ const ov=document.getElementById(id); if(ov)ov.classList.add('open'); }
+  function closeModal(ov){ ov.classList.remove('open'); }
+  document.addEventListener('click', e=>{
+    if(e.target.matches('[data-close]')){ closeModal(e.target.closest('.overlay')); return; }
+    if(e.target.matches('[data-overlay]')){ closeModal(e.target); return; }
+  });
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape'){ document.querySelectorAll('.overlay.open').forEach(closeModal); } });
+
+  /* ===================================================================
+     49er-Kugelraster
+     =================================================================== */
+  function renderGrid(){
+    const grid = document.getElementById('ballGrid');
+    let html = '';
+    for(let i=1;i<=49;i++){
+      const on = selectedNumbers.includes(i);
+      const disabled = !on && selectedNumbers.length >= 6;
+      html += `<div class="pball ${on?'on':''} ${disabled?'disabled':''}" data-n="${i}">${i}</div>`;
+    }
+    grid.innerHTML = html;
+    document.getElementById('selCount').textContent = selectedNumbers.length;
+  }
+  function toggleNumber(n){
+    if(selectedNumbers.includes(n)) selectedNumbers = selectedNumbers.filter(x=>x!==n);
+    else if(selectedNumbers.length < 6) selectedNumbers.push(n);
+    renderGrid();
+  }
+  function setLottoNumbers(arr){ selectedNumbers = [...arr]; renderGrid(); }
+  document.getElementById('ballGrid').addEventListener('click', e=>{
+    const b = e.target.closest('.pball'); if(!b || b.classList.contains('disabled'))return;
+    toggleNumber(parseInt(b.dataset.n,10));
+  });
+
+  // (Fortsetzung in Teil 2)
+
+  /* ===================================================================
+     LADEN
+     =================================================================== */
+  // Holt Text und probiert bei Fehlschlag mehrere CORS-Proxys (Auslands-tauglich)
+  async function fetchTextWithFallback(targetUrl) {
+    const attempts = [
+      targetUrl,
+      "https://corsproxy.io/?url=" + encodeURIComponent(targetUrl),
+      "https://api.allorigins.win/raw?url=" + encodeURIComponent(targetUrl),
+      "https://thingproxy.freeboard.io/fetch/" + targetUrl,
+      "https://api.codetabs.com/v1/proxy/?quest=" + encodeURIComponent(targetUrl)
+    ];
+    let lastErr = null;
+    for (const url of attempts) {
+      try {
+        const res = await fetch(url, { cache: "no-store" });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const text = await res.text();
+        if (text && text.length > 20) return text;
+        throw new Error("Leere Antwort");
+      } catch (err) { lastErr = err; }
+    }
+    throw lastErr || new Error("Alle Abruf-Versuche fehlgeschlagen");
+  }
+
+  async function loadFromGitHub(silent) {
+    if(!silent) showLoading("Lade aktuelle Daten …");
+    try {
+      const text = await fetchTextWithFallback(GITHUB_URL);
+      const json = JSON.parse(text);
+      const wide = tidyToWide(json);
+      if (wide.length) {
+        lottoData = wide;
+        updateDisplay();
+        showMessage(`✅ Daten geladen (${wide.length} Ziehungen).`, true);
+        return true;
+      } else {
+        showMessage("❌ Keine gültigen Ziehungen im geladenen JSON gefunden.", false);
+        return false;
+      }
+    } catch (err) {
+      showMessage("❌ Fehler beim Laden: " + err.message, false);
+      return false;
+    } finally { hideLoading(); }
+  }
+
+  function handleFile(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    showLoading("Verarbeite Datei …");
+    const reader = new FileReader();
+    reader.onload = function(ev) {
+      try {
+        const json = JSON.parse(ev.target.result);
+        const wide = tidyToWide(json);
+        if (wide.length) {
+          lottoData = wide;
+          updateDisplay();
+          showMessage(`✅ Datei geladen (${wide.length} Ziehungen).`, true);
+        } else {
+          showMessage("❌ Keine gültigen Ziehungen in der Datei gefunden.", false);
+        }
+      } catch (err) {
+        showMessage("❌ Datei-Fehler: " + err.message, false);
+      } finally { hideLoading(); }
+    };
+    reader.readAsText(file);
+  }
+
+  /* ===================================================================
+     AKTUELLE ZIEHUNG (WestLotto RSS) — unveraendert aus 1.0.1
+     =================================================================== */
+  async function loadLatestLotto(silent) {
+    try {
+      const rssUrl = "https://ergebnisse.westlotto.com/gewinnzahlen/lottozahlen.rss";
+      const xmlText = await fetchTextWithFallback(rssUrl);
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(xmlText, "application/xml");
+      const titleNode = xmlDoc.querySelector("item > title");
+      if (!titleNode) throw new Error("Kein <title>-Tag im RSS-Feed gefunden.");
+      const titleText = titleNode.textContent.trim();
+      const parts = titleText.match(/^vom\s+(\d{2}\.\d{2}\.\d{2}):\s*([\d,\s]+)S:\s*(\d)$/);
+      if (!parts) throw new Error("Format des <title>-Inhalts unerwartet: " + titleText);
+      let [, rawDate, numStr, superStr] = parts;
+      const [dd, mm, yy] = rawDate.split(".");
+      const fullYear = parseInt(yy, 10) < 50 ? "20" + yy : "19" + yy;
+      const formattedDate = `${dd}.${mm}.${fullYear}`;
+      const numbers = numStr.split(",").map(n => parseInt(n.trim(), 10)).filter(n => !isNaN(n)).sort((a, b) => a - b);
+      if (numbers.length !== 6) throw new Error("Anzahl der Lottozahlen stimmt nicht (6 erwartet).");
+      document.getElementById("newDate").value = formattedDate;
+      setLottoNumbers(numbers);
+      document.getElementById("newSuper").value = superStr;
+      const exists = lottoData.some(e => e.date === formattedDate);
+      if (exists) showMessage(`ℹ️ Aktuelle Ziehung (${formattedDate}) ist bereits im Datensatz.`, true);
+      else showMessage(`✅ Aktuelle Ziehung (${formattedDate}) geladen – bereit zum Hinzufügen.`, true);
+    } catch (error) {
+      if (silent) { showMessage("ℹ️ Aktuelle Ziehung konnte nicht automatisch geladen werden.", false); return; }
+      if (confirm("Automatisches Laden fehlgeschlagen. Sollen die letzten bekannten Werte (24.05.2025) eingesetzt werden?")) {
+        document.getElementById("newDate").value = "24.05.2025";
+        setLottoNumbers([5,10,11,12,33,35]);
+        document.getElementById("newSuper").value = "2";
+        showMessage("⚠️ Fallback-Werte eingesetzt. Bitte prüfen!", true);
+      } else {
+        showMessage("❌ Fehler: " + error.message, false);
+      }
+    }
+  }
+
+  /* ===================================================================
+     NEUE ZIEHUNG HINZUFUEGEN — Validierung unveraendert
+     =================================================================== */
+  function addNewEntry() {
+    const newDate = document.getElementById('newDate').value.trim();
+    const numbers = [...selectedNumbers];
+    const newSuper = parseInt(document.getElementById('newSuper').value);
+    const errors = [];
+    if (!/^\d{2}\.\d{2}\.\d{4}$/.test(newDate)) errors.push("Datum muss TT.MM.JJJJ Format sein");
+    if (numbers.length !== 6) errors.push("Genau 6 Zahlen benötigt");
+    else if (numbers.some(n => n < 1 || n > 49)) errors.push("Zahlen müssen zwischen 1-49 liegen");
+    else if (new Set(numbers).size !== 6) errors.push("Doppelte Zahlen nicht erlaubt");
+    if (isNaN(newSuper) || newSuper < 0 || newSuper > 9) errors.push("Superzahl muss 0-9 sein");
+    if (lottoData.some(entry => entry.date === newDate)) errors.push("Datum bereits vorhanden!");
+    if (errors.length > 0) { showMessage("❌ " + errors.join(" | "), false); return; }
+    const newId = lottoData.length > 0 ? Math.max(...lottoData.map(e => e.id)) + 1 : 1;
+    lottoData.push({ id: newId, date: newDate, Lottozahl: [...numbers].sort((a,b)=>a-b), Superzahl: newSuper });
+    lottoData.sort((a, b) => {
+      const [da,ma,ya]=a.date.split('.'); const [db,mb,yb]=b.date.split('.');
+      return new Date(`${yb}-${mb}-${db}`) - new Date(`${ya}-${ma}-${da}`);
+    });
+    updateDisplay();
+    showMessage("✅ Eintrag hinzugefügt!", true);
+    selectedNumbers = [];
+    renderGrid();
+    document.getElementById('newSuper').value = "";
+    document.getElementById('newDate').value = "";
+  }
+
+  /* ===================================================================
+     SUCHE / LOESCHEN / SPEICHERN
+     =================================================================== */
+  function searchById() {
+    const id = parseInt(document.getElementById('searchId').value);
+    const resultDiv = document.getElementById('searchResult');
+    if (isNaN(id)) { resultDiv.textContent = "❌ Bitte gültige ID eingeben."; return; }
+    const entry = lottoData.find(e => e.id === id);
+    if (entry) {
+      const nums = entry.Lottozahl.slice().sort((a,b)=>a-b);
+      const balls = nums.map(n=>`<span class="mini-ball">${n}</span>`).join('')
+        + (entry.Superzahl!=null?`<span class="mini-ball super">${entry.Superzahl}</span>`:'');
+      resultDiv.innerHTML = `Ziehung #${entry.id} · ${entry.date}<div class="result-balls">${balls}</div>`;
+    } else {
+      resultDiv.textContent = `❌ Kein Datensatz mit ID ${id} gefunden.`;
+    }
+  }
+
+  function deleteLastEntries() {
+    const count = parseInt(document.getElementById('deleteCount').value);
+    if (isNaN(count) || count <= 0) { showMessage("❌ Bitte gültige Anzahl eingeben!", false); return; }
+    if (count > lottoData.length) { showMessage("❌ Es gibt nicht so viele Datensätze!", false); return; }
+    const tempSorted = [...lottoData].sort((a, b) => b.id - a.id);
+    tempSorted.splice(0, count);
+    lottoData = tempSorted.sort((a, b) => {
+      const [da,ma,ya]=a.date.split('.'); const [db,mb,yb]=b.date.split('.');
+      return new Date(`${yb}-${mb}-${db}`) - new Date(`${ya}-${ma}-${da}`);
+    });
+    updateDisplay();
+    document.getElementById('deleteCount').value = "";
+    showMessage(`🗑️ Letzte ${count} Datensätze gelöscht.`, true);
+  }
+
+  function saveData() {
+    let fileName = document.getElementById('saveName').value.trim();
+    if (!fileName) fileName = "lotto_daten_backup";
+    const now = new Date();
+    const dateStamp = `${String(now.getDate()).padStart(2,'0')}-${String(now.getMonth()+1).padStart(2,'0')}-${now.getFullYear()}`;
+    const tidy = wideToTidy(lottoData);
+    const blob = new Blob([JSON.stringify(tidy)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `${fileName}_${dateStamp}.json`; a.click();
+    URL.revokeObjectURL(url);
+    showMessage(`✅ ${lottoData.length} Ziehungen im Tidy-Format gespeichert!`, true);
+  }
+
+  /* ===================================================================
+     ANZEIGE + SPRUNGLEISTE
+     =================================================================== */
+  function updateDisplay() {
+    const sortedDesc = [...lottoData].sort((a, b) => b.id - a.id);
+    const container = document.getElementById('dataList');
+    document.getElementById('entryCount').textContent = lottoData.length;
+    if (!sortedDesc.length) { container.innerHTML = '<div class="empty-note">Keine Daten geladen</div>'; return; }
+    let html = '';
+    for (const e of sortedDesc) {
+      const nums = (e.Lottozahl || []).slice().sort((a,b)=>a-b).map(n => String(n).padStart(2,'0')).join(' ');
+      const sz = (e.Superzahl != null && e.Superzahl !== '') ? `<span class="rsz">SZ ${e.Superzahl}</span>` : '';
+      html += `<div class="draw-row" id="draw-${e.id}">`
+            + `<span class="rid">#${e.id}</span>`
+            + `<span class="rdate">${e.date}</span>`
+            + `<span class="rnums">${nums}</span>${sz}</div>`;
+    }
+    container.innerHTML = html;
+  }
+  function scrollToDraw(id, highlight) {
+    const row = document.getElementById('draw-' + id);
+    const box = document.getElementById('dataList');
+    if (!row || !box) return false;
+    box.scrollTop = row.offsetTop - box.offsetTop;
+    if (highlight) {
+      document.querySelectorAll('.draw-row.highlight').forEach(r => r.classList.remove('highlight'));
+      row.classList.add('highlight');
+      setTimeout(() => row.classList.remove('highlight'), 2000);
+    }
+    return true;
+  }
+  function jumpFirst() { if(!lottoData.length)return; scrollToDraw(Math.min(...lottoData.map(e=>e.id)), true); }
+  function jumpLast()  { if(!lottoData.length)return; scrollToDraw(Math.max(...lottoData.map(e=>e.id)), true); }
+  function jumpToId() {
+    const id = parseInt(document.getElementById('jumpToId').value, 10);
+    if (isNaN(id)) { showMessage("❌ Bitte eine gültige ID eingeben.", false); return; }
+    if (!scrollToDraw(id, true)) showMessage(`❌ Kein Datensatz mit ID ${id} gefunden.`, false);
+  }
+
+  /* ===================================================================
+     EVENTS / START
+     =================================================================== */
+  document.getElementById('btnGithub').addEventListener('click', () => loadFromGitHub(false));
+  document.getElementById('fileInput').addEventListener('change', handleFile);
+  document.getElementById('btnLatest').addEventListener('click', () => loadLatestLotto(false));
+  document.getElementById('btnAdd').addEventListener('click', addNewEntry);
+  document.getElementById('btnSearch').addEventListener('click', () => openModal('mSearch'));
+  document.getElementById('btnDelete').addEventListener('click', () => openModal('mDelete'));
+  document.getElementById('btnSave').addEventListener('click', () => openModal('mSave'));
+  document.getElementById('btnDoSearch').addEventListener('click', searchById);
+  document.getElementById('btnDoDelete').addEventListener('click', deleteLastEntries);
+  document.getElementById('btnDoSave').addEventListener('click', saveData);
+  document.getElementById('btnFirst').addEventListener('click', jumpFirst);
+  document.getElementById('btnLast').addEventListener('click', jumpLast);
+  document.getElementById('btnJump').addEventListener('click', jumpToId);
+  document.getElementById('searchId').addEventListener('keydown', e=>{ if(e.key==='Enter')searchById(); });
+  document.getElementById('jumpToId').addEventListener('keydown', e=>{ if(e.key==='Enter')jumpToId(); });
+
+  // Initiales Raster + automatischer Start
+  renderGrid();
+  window.addEventListener('DOMContentLoaded', async () => {
+    const ok = await loadFromGitHub(true);
+    if (ok) setTimeout(() => loadLatestLotto(true), 1500);
+  });
+  </script>
+</body>
+</html>
