@@ -1,0 +1,784 @@
+﻿<!DOCTYPE html>
+<!--
+ ==================================================================
+  Lotto Manager Pro
+  Version: 1.0.1
+  Stand: 14. Juni 2026
+ ------------------------------------------------------------------
+  Changelog:
+  - 1.0.0  Umstellung auf das neue Tidy-JSON-Format des
+           LottoNumberArchive (immer aktueller Link ohne Commit-Hash).
+           Laden + Speichern arbeiten jetzt mit dem Tidy-Format.
+           Intern wird per tidyToWide() in das bewaehrte Breitformat
+           umgewandelt; gespeichert wird per wideToTidy() wieder als
+           reines Tidy-Array (identisch zum GitHub-Original).
+           Superzahl wird als optional behandelt (fehlt vor 1991).
+  - 1.0.1  Selbstschliessende Hinweis-Fenster (Toast) statt fixem
+           Meldungskasten. Automatisches Laden der Daten beim Start,
+           danach zeitversetzt automatisches Holen der aktuellen
+           Ziehung (mehrere Proxy-Fallbacks fuer Auslands-Tauglichkeit).
+           Datenanzeige als lesbare Liste mit Sprungleiste
+           (Erster / Letzter / zu ID springen).
+ ------------------------------------------------------------------
+  Datenquelle (Tidy, immer aktuell):
+   https://johannesfriedrich.github.io/LottoNumberArchive/Lottonumbers_tidy_complete.json
+  Projektseite:
+   https://johannesfriedrich.github.io/LottoNumberArchive/
+  Repository:
+   https://github.com/JohannesFriedrich/LottoNumberArchive
+  WestLotto (fuer "Aktuelle Ziehung"):
+   https://www.westlotto.de/
+   RSS: https://ergebnisse.westlotto.com/gewinnzahlen/lottozahlen.rss
+ ==================================================================
+-->
+
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lotto Manager Pro</title>
+  <style>
+    :root {
+      --primary: #2c3e50;
+      --secondary: #3498db;
+      --success: #27ae60;
+      --danger: #e74c3c;
+      --background: #f4f6f8;
+      --info: #dfe6e9;
+    }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      margin: 0;
+      padding: 10px;
+      background: var(--background);
+    }
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+    }
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: var(--primary);
+      text-align: center;
+      margin-bottom: 4px;
+    }
+    .version-label {
+      text-align: center;
+      font-size: 0.95em;
+      color: #888;
+      margin-bottom: 22px;
+      margin-top: 0;
+      letter-spacing: 0.5px;
+    }
+    .input-group {
+      margin-bottom: 12px;
+    }
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: 500;
+      color: var(--primary);
+    }
+    input, button {
+      width: 100%;
+      padding: 10px;
+      font-size: 16px;
+      border-radius: 8px;
+      border: 1px solid #ccc;
+      box-sizing: border-box;
+    }
+    input:focus {
+      border-color: var(--secondary);
+      outline: none;
+    }
+    button {
+      background: var(--secondary);
+      color: white;
+      border: none;
+      margin-top: 10px;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #2980b9;
+    }
+    .info-box {
+      max-height: 120px;
+      overflow-y: auto;
+      background: var(--info);
+      color: #333;
+      padding: 10px;
+      border-radius: 8px;
+      font-size: 14px;
+      margin-top: 10px;
+      display: none;
+    }
+    #currentData {
+      white-space: pre-wrap;
+      background: #fafafa;
+      padding: 12px;
+      border-radius: 8px;
+      font-family: monospace;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .mobile-warning {
+      display: none;
+      background: #fff3cd;
+      color: #856404;
+      padding: 10px;
+      border-radius: 8px;
+      text-align: center;
+      margin-bottom: 12px;
+    }
+    @media (max-width: 480px) {
+      .mobile-warning {
+        display: block;
+      }
+    }
+    #searchResult {
+      white-space: pre-wrap;
+      background: #ecf0f1;
+      padding: 10px;
+      font-family: monospace;
+      border-radius: 8px;
+      margin-top: 10px;
+    }
+    /* Lottofeld-Gitter-Stil */
+    .lotto-grid {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-start;
+      max-width: 252px;
+      margin-bottom: 10px;
+      gap: 4px;
+      user-select: none;
+    }
+    .lotto-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 2px solid #3498db;
+      background: #fff;
+      color: #3498db;
+      font-weight: bold;
+      text-align: center;
+      cursor: pointer;
+      font-size: 16px;
+      transition: background 0.2s, color 0.2s;
+      margin: 0;
+      outline: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      vertical-align: middle;
+      line-height: 1;
+      /* Mittig im Button */
+      padding: 0;
+    }
+    .lotto-btn.selected {
+      background: #3498db;
+      color: #fff;
+      border-color: #2c3e50;
+    }
+    .lotto-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .lotto-grid-row {
+      width: 100%;
+      display: flex;
+      flex-direction: row;
+      justify-content: flex-start;
+      margin-bottom: 2px;
+    }
+    .lotto-zwischenraum {
+      margin-bottom: 22px !important;
+      margin-top: 8px !important;
+    }
+    /* Selbstschliessendes Hinweis-Fenster (Toast) */
+    #toast {
+      position: fixed;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%) translateY(-24px);
+      z-index: 9999;
+      min-width: 200px;
+      max-width: 92vw;
+      padding: 13px 20px;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      color: #fff;
+      background: var(--success);
+      box-shadow: 0 6px 22px rgba(0,0,0,0.22);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .3s ease, transform .3s ease;
+      text-align: center;
+    }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    #toast.error   { background: var(--danger); }
+    #toast.info    { background: var(--secondary); }
+    #toast.success { background: var(--success); }
+    /* Sprungleiste fuer die Datenanzeige */
+    .jump-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .jump-bar button {
+      width: auto;
+      flex: 0 0 auto;
+      margin-top: 0;
+      padding: 8px 12px;
+      font-size: 14px;
+    }
+    .jump-bar input {
+      width: 110px;
+      margin-top: 0;
+      padding: 8px;
+      font-size: 14px;
+    }
+    /* Lesbare Datensatz-Liste */
+    .draw-row {
+      padding: 6px 8px;
+      border-bottom: 1px solid #eee;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 14px;
+      scroll-margin-top: 8px;
+    }
+    .draw-row:nth-child(even) { background: #f7f9fb; }
+    .draw-row .rid { color: #888; font-weight: 600; margin-right: 8px; }
+    .draw-row .rdate { color: #2c3e50; font-weight: 600; margin-right: 8px; }
+    .draw-row .rnums { letter-spacing: 1px; }
+    .draw-row .rsz { color: var(--secondary); font-weight: 600; margin-left: 6px; }
+    .draw-row.highlight { background: #fff3cd; }
+  </style>
+</head>
+<body>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <div class="container">
+    <h1>🎱 Lotto Manager Pro</h1>
+    <div class="version-label">Version 1.0.1</div>
+    <div class="mobile-warning" id="statusBox">
+      Bitte im Hochformat verwenden<br>
+      <strong id="entryCount">Datensätze: 0</strong>
+    </div>
+    <div class="card">
+      <h3>📁 Datenquelle</h3>
+      <button onclick="loadFromGitHub()">Von GitHub laden</button>
+      <input type="file" id="fileInput" accept=".json" style="margin-top:10px;">
+    </div>
+    <div class="card">
+      <h3>➕ Neue Ziehung</h3>
+      <button onclick="loadLatestLotto()"
+        style="margin-bottom:22px; margin-top:0;" class="lotto-zwischenraum">
+        Aktuelle Ziehung https://www.westlotto.de/
+      </button>
+      <div class="input-group">
+        <label>Datum (TT.MM.JJJJ):</label>
+        <input type="text" id="newDate" placeholder="z.B. 31.12.2024">
+      </div>
+      <div class="input-group">
+        <label>Lottozahlen (6 Zahlen ankreuzen):</label>
+        <!-- NEU: Lottofeld-Gitter -->
+        <div class="lotto-grid" id="lottoGrid"></div>
+        <!-- Das versteckte Eingabefeld für Kompatibilität (wird automatisch synchronisiert) -->
+        <input type="hidden" id="newNumbers">
+      </div>
+      <div class="input-group">
+        <label>Superzahl (0–9):</label>
+        <input type="number" id="newSuper" min="0" max="9">
+      </div>
+      <button onclick="addNewEntry()">Ziehung hinzufügen</button>
+      <div class="info-box" id="infoBox"></div>
+    </div>
+
+    <div class="card">
+      <h3>🔍 Suche nach ID</h3>
+      <input type="number" id="searchId" placeholder="ID eingeben...">
+      <button onclick="searchById()">Datensatz anzeigen</button>
+      <div id="searchResult">Noch keine Suche durchgeführt.</div>
+    </div>
+    <div class="card">
+      <h3>🗑️ Letzte Einträge löschen</h3>
+      <input type="number" id="deleteCount" placeholder="Anzahl letzter Einträge">
+      <button onclick="deleteLastEntries()">Letzte löschen & anzeigen</button>
+    </div>
+    <div class="card">
+      <h3>💾 Speichern</h3>
+      <input type="text" id="saveName" placeholder="Dateiname (ohne .json)">
+      <button onclick="saveData()" style="margin-top:15px;">Als JSON speichern</button>
+    </div>
+    <div class="card">
+      <h3>📊 Aktuelle Daten</h3>
+      <div class="jump-bar">
+        <button onclick="jumpFirst()" title="Zum ersten Datensatz">⬆ Erster</button>
+        <button onclick="jumpLast()" title="Zum letzten Datensatz">⬇ Letzter</button>
+        <input type="number" id="jumpToId" placeholder="ID…" min="1">
+        <button onclick="jumpToId()">Springen</button>
+      </div>
+      <div id="currentData">Keine Daten geladen</div>
+    </div>
+  </div>
+  <script>
+    let lottoData = [];
+    // NEU: Tidy-Format-Link (immer aktuell, ohne Commit-Hash)
+    const GITHUB_URL = "https://johannesfriedrich.github.io/LottoNumberArchive/Lottonumbers_tidy_complete.json";
+
+    // ================================================================
+    //  KONVERTER: Tidy <-> Breit
+    //  Der gesamte restliche Code arbeitet mit dem Breitformat:
+    //    { id, date, Lottozahl:[6], Superzahl:0-9? }
+    //  Geladen/gespeichert wird aber das Tidy-Format:
+    //    [ {id,date,variable:"Lottozahl"|"Superzahl",value} , ... ]
+    // ================================================================
+
+    // Tidy-Array -> Breit-Array  [{id,date,Lottozahl,Superzahl}]
+    // Robust: akzeptiert auch bereits vorliegendes Breitformat ({data:[...]}).
+    function tidyToWide(input) {
+      // Schon Breitformat? (Kompatibilitaet mit alten Dateien)
+      if (input && Array.isArray(input.data)) {
+        return input.data.map(e => ({
+          id: e.id,
+          date: e.date,
+          Lottozahl: Array.isArray(e.Lottozahl) ? e.Lottozahl.map(Number) : [],
+          ...(e.Superzahl !== undefined && e.Superzahl !== null
+                ? { Superzahl: Number(e.Superzahl) } : {})
+        }));
+      }
+      if (!Array.isArray(input)) {
+        throw new Error("Unbekannte JSON-Struktur (weder Tidy-Array noch {data:[]}).");
+      }
+      // Tidy-Array -> nach id gruppieren
+      const map = new Map(); // id -> {id,date,Lottozahl:[],Superzahl?}
+      for (const row of input) {
+        if (!row || row.id === undefined || row.id === null) continue;
+        const id = row.id;
+        if (!map.has(id)) {
+          map.set(id, { id: id, date: row.date, Lottozahl: [] });
+        }
+        const entry = map.get(id);
+        if (row.date && !entry.date) entry.date = row.date;
+        if (row.variable === "Lottozahl") {
+          entry.Lottozahl.push(Number(row.value));
+        } else if (row.variable === "Superzahl") {
+          entry.Superzahl = Number(row.value);
+        }
+        // Weitere variable-Werte (z.B. spaeter Spiel77) werden hier
+        // bewusst ignoriert, koennen aber leicht ergaenzt werden.
+      }
+      // Nur gueltige Ziehungen (genau 6 Lottozahlen), Lottozahlen sortiert
+      const wide = [];
+      for (const entry of map.values()) {
+        if (entry.Lottozahl.length === 6) {
+          entry.Lottozahl.sort((a, b) => a - b);
+          wide.push(entry);
+        }
+      }
+      // Nach id aufsteigend
+      wide.sort((a, b) => a.id - b.id);
+      return wide;
+    }
+
+    // Breit-Array [{id,date,Lottozahl,Superzahl}] -> Tidy-Array (flach)
+    // Ergebnis ist identisch zum GitHub-Original (reines Array, kein Wrapper).
+    function wideToTidy(wide) {
+      const tidy = [];
+      const sorted = [...wide].sort((a, b) => a.id - b.id);
+      for (const e of sorted) {
+        const nums = Array.isArray(e.Lottozahl)
+          ? [...e.Lottozahl].map(Number).sort((a, b) => a - b)
+          : [];
+        for (const z of nums) {
+          tidy.push({ id: e.id, date: e.date, variable: "Lottozahl", value: z });
+        }
+        if (e.Superzahl !== undefined && e.Superzahl !== null && e.Superzahl !== "") {
+          tidy.push({ id: e.id, date: e.date, variable: "Superzahl", value: Number(e.Superzahl) });
+        }
+      }
+      return tidy;
+    }
+    // ================================================================
+
+    // --- Lottofeld-Logik (NEU) ---
+    let selectedNumbers = [];
+
+    function renderLottoGrid() {
+      const grid = document.getElementById('lottoGrid');
+      grid.innerHTML = '';
+      for (let i = 1; i <= 49; i++) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = i;
+        btn.className = 'lotto-btn' + (selectedNumbers.includes(i) ? ' selected' : '');
+        btn.onclick = () => toggleLottoNumber(i);
+        if (!selectedNumbers.includes(i) && selectedNumbers.length >= 6) {
+          btn.disabled = true;
+        }
+        grid.appendChild(btn);
+        if (i % 7 === 0) {
+          grid.appendChild(document.createElement('br'));
+        }
+      }
+      // Synchronisiere das versteckte Eingabefeld für die weitere Verarbeitung
+      document.getElementById('newNumbers').value = selectedNumbers.join(',');
+    }
+
+    function toggleLottoNumber(n) {
+      if (selectedNumbers.includes(n)) {
+        selectedNumbers = selectedNumbers.filter(x => x !== n);
+      } else if (selectedNumbers.length < 6) {
+        selectedNumbers.push(n);
+      }
+      renderLottoGrid();
+    }
+
+    // Hilfsfunktion für andere Codebereiche
+    function setLottoNumbers(numsArr) {
+      selectedNumbers = [...numsArr];
+      renderLottoGrid();
+    }
+
+    // Initiales Rendern beim Laden
+    window.addEventListener('DOMContentLoaded', renderLottoGrid);
+
+    // Für Kompatibilität: Wenn das Feld manuell (z.B. beim Import) verändert wird
+    function syncLottoFieldFromInput() {
+      const val = document.getElementById('newNumbers').value.trim();
+      if (!val) {
+        selectedNumbers = [];
+      } else {
+        selectedNumbers = val.split(',').map(x => parseInt(x, 10)).filter(x => !isNaN(x));
+      }
+      renderLottoGrid();
+    }
+
+    // --- ENDE Lottofeld-Logik ---
+
+    async function loadFromGitHub(silent) {
+      try {
+        const text = await fetchTextWithFallback(GITHUB_URL);
+        const json = JSON.parse(text);
+        const wide = tidyToWide(json);
+        if (wide.length) {
+          lottoData = wide;
+          updateDisplay();
+          showMessage(`✅ Daten geladen (${wide.length} Ziehungen).`, true);
+          return true;
+        } else {
+          showMessage("❌ Keine gültigen Ziehungen im geladenen JSON gefunden.", false);
+          return false;
+        }
+      } catch (err) {
+        showMessage("❌ Fehler beim Laden: " + err.message, false);
+        return false;
+      }
+    }
+
+    // Automatischer Start: Erst Daten laden, dann zeitversetzt aktuelle Ziehung.
+    window.addEventListener('DOMContentLoaded', async () => {
+      const ok = await loadFromGitHub(true);
+      if (ok) {
+        // Zeitversetzt die aktuelle Ziehung holen (silent = ohne Rueckfrage)
+        setTimeout(() => { loadLatestLotto(true); }, 1500);
+      }
+    });
+
+    // Holt Text von einer URL und probiert bei Fehlschlag mehrere CORS-Proxys.
+    // Das macht den Abruf auch aus dem Ausland (z.B. Portugal) robust.
+    async function fetchTextWithFallback(targetUrl) {
+      const attempts = [
+        targetUrl, // 1. direkt
+        "https://corsproxy.io/?url=" + encodeURIComponent(targetUrl),
+        "https://api.allorigins.win/raw?url=" + encodeURIComponent(targetUrl),
+        "https://thingproxy.freeboard.io/fetch/" + targetUrl,
+        "https://api.codetabs.com/v1/proxy/?quest=" + encodeURIComponent(targetUrl)
+      ];
+      let lastErr = null;
+      for (const url of attempts) {
+        try {
+          const res = await fetch(url, { cache: "no-store" });
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          const text = await res.text();
+          if (text && text.length > 20) return text;
+          throw new Error("Leere Antwort");
+        } catch (err) {
+          lastErr = err;
+          // naechsten Proxy versuchen
+        }
+      }
+      throw lastErr || new Error("Alle Abruf-Versuche fehlgeschlagen");
+    }
+
+    async function loadLatestLotto(silent) {
+      try {
+        const rssUrl = "https://ergebnisse.westlotto.com/gewinnzahlen/lottozahlen.rss";
+        const xmlText = await fetchTextWithFallback(rssUrl);
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(xmlText, "application/xml");
+        const titleNode = xmlDoc.querySelector("item > title");
+        if (!titleNode) {
+          throw new Error("Kein <title>-Tag im RSS-Feed gefunden.");
+        }
+        const titleText = titleNode.textContent.trim();
+        const parts = titleText.match(/^vom\s+(\d{2}\.\d{2}\.\d{2}):\s*([\d,\s]+)S:\s*(\d)$/);
+        if (!parts) {
+          throw new Error("Format des <title>-Inhalts unerwartet: " + titleText);
+        }
+        let [, rawDate, numStr, superStr] = parts;
+        const [dd, mm, yy] = rawDate.split(".");
+        const fullYear = parseInt(yy, 10) < 50 ? "20" + yy : "19" + yy;
+        const formattedDate = `${dd}.${mm}.${fullYear}`;
+        const numbers = numStr.split(",")
+          .map(n => parseInt(n.trim(), 10))
+          .filter(n => !isNaN(n))
+          .sort((a, b) => a - b);
+        if (numbers.length !== 6) {
+          throw new Error("Anzahl der Lottozahlen stimmt nicht (6 erwartet).");
+        }
+        document.getElementById("newDate").value = formattedDate;
+        setLottoNumbers(numbers);
+        document.getElementById("newSuper").value = superStr;
+        // Hinweis, falls die Ziehung bereits im Datensatz ist
+        const exists = lottoData.some(e => e.date === formattedDate);
+        if (exists) {
+          showMessage(`ℹ️ Aktuelle Ziehung (${formattedDate}) ist bereits im Datensatz.`, true);
+        } else {
+          showMessage(`✅ Aktuelle Ziehung (${formattedDate}) geladen – bereit zum Hinzufügen.`, true);
+        }
+      } catch (error) {
+        // Im Auto-Modus (silent) keine Rueckfrage, nur dezenter Hinweis
+        if (silent) {
+          showMessage("ℹ️ Aktuelle Ziehung konnte nicht automatisch geladen werden.", false);
+          return;
+        }
+        if (confirm("Automatisches Laden fehlgeschlagen. Sollen die letzten bekannten Werte (24.05.2025) eingesetzt werden?")) {
+          document.getElementById("newDate").value = "24.05.2025";
+          setLottoNumbers([5,10,11,12,33,35]);
+          document.getElementById("newSuper").value = "2";
+          showMessage("⚠️ Fallback-Werte eingesetzt. Bitte prüfen!", true);
+        } else {
+          showMessage("❌ Fehler: " + error.message, false);
+        }
+      }
+    }
+
+    document.getElementById('fileInput').addEventListener('change', function(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        try {
+          const json = JSON.parse(e.target.result);
+          const wide = tidyToWide(json);
+          if (wide.length) {
+            lottoData = wide;
+            updateDisplay();
+            showMessage(`✅ Datei erfolgreich geladen (${wide.length} Ziehungen).`, true);
+          } else {
+            showMessage("❌ Keine gültigen Ziehungen in der Datei gefunden.", false);
+          }
+        } catch (err) {
+          showMessage("❌ Fehler beim Parsen der Datei: " + err.message, false);
+        }
+      };
+      reader.readAsText(file);
+    });
+
+    function addNewEntry() {
+      const newDate = document.getElementById('newDate').value.trim();
+      // Hole die aktuell ausgewählten Zahlen aus dem Grid
+      const numbers = [...selectedNumbers];
+      const newSuper = parseInt(document.getElementById('newSuper').value);
+      const errors = [];
+      // Datumsvalidierung
+      if (!/^\d{2}\.\d{2}\.\d{4}$/.test(newDate)) {
+        errors.push("Datum muss TT.MM.JJJJ Format sein");
+      }
+      // Zahlenvalidierung
+      if (numbers.length !== 6) {
+        errors.push("Genau 6 Zahlen benötigt");
+      } else if (numbers.some(n => n < 1 || n > 49)) {
+        errors.push("Zahlen müssen zwischen 1-49 liegen");
+      } else if (new Set(numbers).size !== 6) {
+        errors.push("Doppelte Zahlen nicht erlaubt");
+      }
+      // Superzahl-Validierung
+      if (isNaN(newSuper) || newSuper < 0 || newSuper > 9) {
+        errors.push("Superzahl muss 0-9 sein");
+      }
+      // Duplikatsprüfung
+      const dateExists = lottoData.some(entry => entry.date === newDate);
+      if (dateExists) {
+        errors.push("Datum bereits vorhanden!");
+      }
+      if (errors.length > 0) {
+        showMessage("❌ " + errors.join(" | "), false);
+        return;
+      }
+      const newId = lottoData.length > 0 
+        ? Math.max(...lottoData.map(e => e.id)) + 1 
+        : 1;
+      const entry = {
+        id: newId,
+        date: newDate,
+        Lottozahl: [...numbers].sort((a, b) => a - b),
+        Superzahl: newSuper
+      };
+      lottoData.push(entry);
+      // Sortierung nach Datum (neueste zuerst)
+      lottoData.sort((a, b) => {
+        const [dayA, monthA, yearA] = a.date.split('.');
+        const [dayB, monthB, yearB] = b.date.split('.');
+        const dateA = new Date(`${yearA}-${monthA}-${dayA}`);
+        const dateB = new Date(`${yearB}-${monthB}-${dayB}`);
+        return dateB - dateA; // Neueste zuerst
+      });
+      updateDisplay();
+      showMessage("✅ Eintrag erfolgreich hinzugefügt!", true);
+      // Felder leeren
+      selectedNumbers = [];
+      renderLottoGrid();
+      document.getElementById('newSuper').value = "";
+    }
+
+    function saveData() {
+      let fileName = document.getElementById('saveName').value.trim();
+      if (!fileName) fileName = "lotto_daten_backup";
+      const now = new Date();
+      const day = String(now.getDate()).padStart(2, '0');
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const year = now.getFullYear();
+      const dateStamp = `${day}-${month}-${year}`;
+      // NEU: als reines Tidy-Array speichern (identisch zum GitHub-Original).
+      const tidy = wideToTidy(lottoData);
+      const jsonStr = JSON.stringify(tidy);
+      const blob = new Blob([jsonStr], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${fileName}_${dateStamp}.json`;
+      a.click();
+      showMessage(`✅ ${lottoData.length} Ziehungen im Tidy-Format gespeichert!`, true);
+      URL.revokeObjectURL(url);
+    }
+
+    function updateDisplay() {
+      // Anzeige als lesbare Liste, neueste zuerst (nach id absteigend)
+      const sortedDesc = [...lottoData].sort((a, b) => b.id - a.id);
+      const container = document.getElementById('currentData');
+      if (!sortedDesc.length) {
+        container.textContent = "Keine Daten geladen";
+        document.getElementById('entryCount').textContent = `Datensätze: 0`;
+        return;
+      }
+      let html = '';
+      for (const e of sortedDesc) {
+        const nums = (e.Lottozahl || []).slice().sort((a,b)=>a-b)
+          .map(n => String(n).padStart(2,'0')).join(' ');
+        const sz = (e.Superzahl !== undefined && e.Superzahl !== null && e.Superzahl !== '')
+          ? `<span class="rsz">SZ ${e.Superzahl}</span>` : '';
+        html += `<div class="draw-row" id="draw-${e.id}">`
+              + `<span class="rid">#${e.id}</span>`
+              + `<span class="rdate">${e.date}</span>`
+              + `<span class="rnums">${nums}</span>${sz}</div>`;
+      }
+      container.innerHTML = html;
+      document.getElementById('entryCount').textContent = `Datensätze: ${lottoData.length}`;
+    }
+
+    // --- Sprungleiste ---
+    function scrollToDraw(id, highlight) {
+      const row = document.getElementById('draw-' + id);
+      const box = document.getElementById('currentData');
+      if (!row || !box) return false;
+      box.scrollTop = row.offsetTop - box.offsetTop;
+      if (highlight) {
+        document.querySelectorAll('.draw-row.highlight').forEach(r => r.classList.remove('highlight'));
+        row.classList.add('highlight');
+        setTimeout(() => row.classList.remove('highlight'), 2000);
+      }
+      return true;
+    }
+    function jumpFirst() {
+      if (!lottoData.length) return;
+      const minId = Math.min(...lottoData.map(e => e.id));
+      scrollToDraw(minId, true);
+    }
+    function jumpLast() {
+      if (!lottoData.length) return;
+      const maxId = Math.max(...lottoData.map(e => e.id));
+      scrollToDraw(maxId, true);
+    }
+    function jumpToId() {
+      const id = parseInt(document.getElementById('jumpToId').value, 10);
+      if (isNaN(id)) { showMessage("❌ Bitte eine gültige ID eingeben.", false); return; }
+      if (!scrollToDraw(id, true)) showMessage(`❌ Kein Datensatz mit ID ${id} gefunden.`, false);
+    }
+
+    // Selbstschliessendes Hinweis-Fenster (Toast)
+    let toastTimer = null;
+    function showMessage(message, isSuccess) {
+      const t = document.getElementById('toast');
+      if (!t) return;
+      t.textContent = message;
+      t.className = isSuccess ? 'success' : 'error';
+      void t.offsetWidth; // reflow
+      t.classList.add('show');
+      if (toastTimer) clearTimeout(toastTimer);
+      const ms = isSuccess ? 2500 : 5000;
+      toastTimer = setTimeout(() => { t.classList.remove('show'); }, ms);
+    }
+
+    function searchById() {
+      const id = parseInt(document.getElementById('searchId').value);
+      const resultDiv = document.getElementById('searchResult');
+      if (isNaN(id)) {
+        resultDiv.textContent = "❌ Bitte gültige ID eingeben.";
+        return;
+      }
+      const entry = lottoData.find(e => e.id === id);
+      if (entry) {
+        resultDiv.textContent = `✔️ Gefundener Datensatz:\n` + JSON.stringify(entry, null, 2);
+      } else {
+        resultDiv.textContent = `❌ Kein Datensatz mit ID ${id} gefunden.`;
+      }
+    }
+
+    function deleteLastEntries() {
+      const count = parseInt(document.getElementById('deleteCount').value);
+      if (isNaN(count) || count <= 0) {
+        showMessage("❌ Bitte gültige Anzahl eingeben!", false);
+        return;
+      }
+      if (count > lottoData.length) {
+        showMessage("❌ Es gibt nicht so viele Datensätze!", false);
+        return;
+      }
+      // Temporäre Sortierung nach ID (absteigend)
+      const tempSorted = [...lottoData].sort((a, b) => b.id - a.id);
+      // Die neuesten Einträge (höchste IDs) löschen
+      tempSorted.splice(0, count);
+      // Zurück zur Datumssortierung (neueste zuerst)
+      lottoData = tempSorted.sort((a, b) => {
+        const [dayA, monthA, yearA] = a.date.split('.');
+        const [dayB, monthB, yearB] = b.date.split('.');
+        const dateA = new Date(`${yearA}-${monthA}-${dayA}`);
+        const dateB = new Date(`${yearB}-${monthB}-${dayB}`);
+        return dateB - dateA; // Neueste zuerst
+      });
+      updateDisplay();
+      showMessage(`🗑️ Letzten ${count} Datensätze gelöscht.`, true);
+    }
+  </script>
+</body>
+</html>
